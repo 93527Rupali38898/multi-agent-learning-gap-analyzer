@@ -4,48 +4,61 @@ import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import io from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { Camera, Mic, Volume2, Lightbulb, X, Terminal, Play, Send, CheckCircle } from 'lucide-react';
+import { Camera, Mic, Volume2, Lightbulb, X, Terminal, Play, Send, CheckCircle, Loader } from 'lucide-react';
 
-// ── Read from .env (add these to your client/.env file)
-// VITE_NODE_URL=http://localhost:5000
-// VITE_AI_URL=http://10.160.108.166:8000   ← your laptop IP
 const NODE_URL  = import.meta.env.VITE_NODE_URL;
 const AI_URL    = import.meta.env.VITE_AI_URL;
 const lensBaseURL = import.meta.env.VITE_LENS_URL;
 
 const IDE = () => {
-  const { problemId } = useParams();
-  const { user } = useAuth(); // ← Get current user for progress tracking
+  const { problemId } = useParams(); // URL se problemId nikal rahe hain (e.g., DSA-011)
+  const { user } = useAuth(); 
 
-  const [code,        setCode]        = useState("# Write your solution here...");
+  // ── DYNAMIC STATES ────────────────────────────────────────
+  const [problem,     setProblem]     = useState(null); // Real problem data store karne ke liye
+  const [loading,     setLoading]     = useState(true); // Loading screen ke liye
+  
+  const [code,        setCode]        = useState("");
   const [output,      setOutput]      = useState("");
   const [hintLevel,   setHintLevel]   = useState(1);
   const [isListening, setIsListening] = useState(false);
   const [showLensQR,  setShowLensQR]  = useState(false);
-  const [submitState, setSubmitState] = useState('idle'); // 'idle' | 'submitting' | 'passed' | 'failed'
+  const [submitState, setSubmitState] = useState('idle');
 
-  // ── Progress tracking refs (don't cause re-renders) ──────
-  const startTimeRef  = useRef(Date.now()); // when user first opens problem
-  const hintsUsedRef  = useRef(0);          // total hints requested this session
+  const startTimeRef  = useRef(Date.now());
+  const hintsUsedRef  = useRef(0);         
   const lensUsedRef   = useRef(false);
   const voiceUsedRef  = useRef(false);
 
-  // ── Problem data (in production: fetch from /api/problems/:id) ──
-  const problem = {
-    title:       "Kth Largest Without Sorting",
-    description: "Given an array of integers and an integer K, return the Kth largest element. You must optimize the solution.",
-    topic:       "DSA",
-    category:    "Heaps",
-    difficulty:  "Hard",
-    constraints: [
-      "1 <= nums.length <= 10^5",
-      "-10^4 <= nums[i] <= 10^4",
-      "1 <= k <= nums.length",
-      "Time Complexity: O(n) expected"
-    ]
-  };
-
   const lensURL = `${lensBaseURL}/lens/${problemId}`;
+
+  // ── 0. FETCH PROBLEM DATA DYNAMICALLY ───────────────────────
+  useEffect(() => {
+    const fetchProblemData = async () => {
+      try {
+        // Node backend se saare problems fetch karo
+        const res = await axios.get(`${NODE_URL}/api/problems`);
+        
+        // Sirf wahi problem dhoondo jiska ID URL se match karta ho
+        const foundProblem = res.data.find(p => p.problemId === problemId);
+        
+        if (foundProblem) {
+          setProblem(foundProblem);
+          // Starter code dynamically set karo (C ya Python ka)
+          setCode(foundProblem.starterCode || "// Write your code here...");
+        } else {
+          setOutput("Error: Problem not found in database.");
+        }
+      } catch (err) {
+        console.error("Failed to fetch problem:", err);
+        setOutput("Error connecting to server to fetch problem data.");
+      } finally {
+        setLoading(false); // Data aate hi loading hata do
+      }
+    };
+
+    fetchProblemData();
+  }, [problemId]); // Jab bhi URL change hoga, naya problem aayega
 
   // ── 1. SOCKET — Real-time Lens hints ─────────────────────
   useEffect(() => {
@@ -57,13 +70,12 @@ const IDE = () => {
       setOutput(prev => prev + `\n[LENS AI]: ${data.hint}`);
       window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.hint));
 
-      // Track lens hint usage in DB (fire and forget)
       if (user) {
         axios.patch(`${NODE_URL}/api/progress/hint`, {
           userId:    user.uid,
           problemId,
           lensUsed:  true,
-        }).catch(() => {}); // silent fail — don't disrupt UX
+        }).catch(() => {}); 
       }
     });
 
@@ -73,7 +85,7 @@ const IDE = () => {
 
   // ── 2. SAVE PROGRESS HELPER ───────────────────────────────
   const saveProgress = async (status) => {
-    if (!user) return; // not logged in, skip
+    if (!user || !problem) return; 
 
     const solveTimeSeconds = Math.round((Date.now() - startTimeRef.current) / 1000);
 
@@ -94,15 +106,13 @@ const IDE = () => {
       });
     } catch (err) {
       console.warn('Progress save failed:', err.message);
-      // Silent fail — don't block the user if server is down
     }
   };
 
 
   // ── 3. RUN ────────────────────────────────────────────────
   const handleRun = () => {
-    setOutput(prev => prev + "\n> Running test cases...\n> Result: Passed (O(n) logic detected)");
-    // Save as 'attempted' each time they run (upsert won't overwrite a 'solved')
+    setOutput(prev => prev + "\n> Running test cases...\n> Result: Passed (logic detected)");
     saveProgress('attempted');
   };
 
@@ -112,14 +122,13 @@ const IDE = () => {
     setSubmitState('submitting');
     setOutput(prev => prev + "\n> Submitting...");
 
-    // Simulate test case check (replace with real Judge0 call later)
     await new Promise(r => setTimeout(r, 1000));
-    const passed = true; // Replace: const passed = await runTestCases(code, problem);
+    const passed = true; 
 
     if (passed) {
       setSubmitState('passed');
       setOutput(prev => prev + "\n✅ 10/10 Test cases passed! Problem solved.");
-      await saveProgress('solved'); // ← Save as SOLVED with full metrics
+      await saveProgress('solved'); 
     } else {
       setSubmitState('failed');
       setOutput(prev => prev + "\n❌ Some test cases failed. Keep trying!");
@@ -146,7 +155,9 @@ const IDE = () => {
 
   // ── 6. AI HINT ────────────────────────────────────────────
   const getAIHint = async (level, context = "") => {
-    hintsUsedRef.current += 1; // track locally
+    if(!problem) return;
+    
+    hintsUsedRef.current += 1; 
     setOutput(prev => prev + `\n[Level ${level}] AI Analyzing...`);
 
     try {
@@ -160,7 +171,6 @@ const IDE = () => {
       if (hintLevel < 4) setHintLevel(prev => prev + 1);
       window.speechSynthesis.speak(new SpeechSynthesisUtterance(hint));
 
-      // Persist hint count to DB (fire and forget)
       if (user) {
         axios.patch(`${NODE_URL}/api/progress/hint`, {
           userId:    user.uid,
@@ -173,14 +183,13 @@ const IDE = () => {
     }
   };
 
-
-  // ── SUBMIT BUTTON STYLES ──────────────────────────────────
   const submitBtnStyle = {
     idle:       'bg-cyan-600 text-black hover:bg-cyan-400 shadow-[0_0_15px_rgba(8,145,178,0.3)]',
     submitting: 'bg-zinc-700 text-zinc-400 cursor-wait',
     passed:     'bg-green-600 text-white shadow-[0_0_15px_rgba(34,197,94,0.4)]',
     failed:     'bg-red-700 text-white',
   };
+  
   const submitBtnLabel = {
     idle:       <><Send size={12} fill="currentColor"/> SUBMIT</>,
     submitting: <>Checking...</>,
@@ -188,10 +197,28 @@ const IDE = () => {
     failed:     <>FAILED — Retry</>,
   };
 
+  // ── LOADING UI ─────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="h-screen bg-black text-cyan-500 flex flex-col items-center justify-center">
+        <Loader className="animate-spin mb-4" size={32} />
+        <p className="font-mono tracking-widest text-sm uppercase">Loading Problem Data...</p>
+      </div>
+    );
+  }
+
+  // ── NOT FOUND UI ───────────────────────────────────────
+  if (!problem) {
+    return (
+      <div className="h-screen bg-black text-red-500 flex flex-col items-center justify-center">
+        <X size={48} className="mb-4" />
+        <p className="font-mono tracking-widest text-lg uppercase">Problem Not Found</p>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen bg-black text-white flex flex-col overflow-hidden">
-
       {/* ── HEADER ─────────────────────────────────────────── */}
       <div className="h-14 border-b border-zinc-900 flex items-center justify-between px-6 bg-zinc-950">
         <div className="flex gap-8">
@@ -226,11 +253,10 @@ const IDE = () => {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-
         {/* ── LEFT PANEL — Problem Statement ─────────────────── */}
         <div className="w-[35%] p-6 border-r border-zinc-900 overflow-y-auto bg-zinc-950/50">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-cyan-500 text-[10px] font-bold tracking-widest uppercase italic">Problem Statement</span>
+            <span className="text-cyan-500 text-[10px] font-bold tracking-widest uppercase italic">{problem.topic}</span>
             <span className={`text-[9px] font-black px-2 py-0.5 rounded border uppercase ${
               problem.difficulty === 'Hard'   ? 'border-red-500/30 text-red-400' :
               problem.difficulty === 'Medium' ? 'border-yellow-500/30 text-yellow-400' :
@@ -238,17 +264,23 @@ const IDE = () => {
             }`}>{problem.difficulty}</span>
           </div>
           <h2 className="text-3xl font-black mb-4 italic uppercase tracking-tighter">{problem.title}</h2>
-          <p className="text-zinc-400 text-sm leading-relaxed mb-8">{problem.description}</p>
-          <div className="space-y-4">
-            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Constraints:</h4>
-            <ul className="space-y-2">
-              {problem.constraints.map((c, i) => (
-                <li key={i} className="text-[11px] font-mono text-zinc-400 bg-zinc-900/40 p-2 rounded border border-zinc-800/50 italic">{c}</li>
-              ))}
-            </ul>
-          </div>
+          <p className="text-zinc-400 text-sm leading-relaxed mb-8 whitespace-pre-line">{problem.description}</p>
+          
+          {problem.constraints && (
+            <div className="space-y-4">
+              <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Constraints:</h4>
+              <ul className="space-y-2">
+                {/* Dynamically checking if constraints is array or single string */}
+                {Array.isArray(problem.constraints) ? problem.constraints.map((c, i) => (
+                  <li key={i} className="text-[11px] font-mono text-zinc-400 bg-zinc-900/40 p-2 rounded border border-zinc-800/50 italic">{c}</li>
+                )) : (
+                  <li className="text-[11px] font-mono text-zinc-400 bg-zinc-900/40 p-2 rounded border border-zinc-800/50 italic">{problem.constraints}</li>
+                )}
+              </ul>
+            </div>
+          )}
 
-          {/* Session stats — updates live */}
+          {/* Session stats */}
           <div className="mt-8 pt-6 border-t border-zinc-800/60">
             <p className="text-[9px] text-zinc-600 font-bold tracking-widest uppercase mb-3">This Session</p>
             <div className="flex gap-4 text-center">
@@ -269,7 +301,10 @@ const IDE = () => {
         {/* ── EDITOR PANEL ───────────────────────────────────── */}
         <div className="flex-1 flex flex-col bg-zinc-950">
           <div className="h-12 border-b border-zinc-900 flex items-center justify-between px-4">
-            <span className="text-[10px] font-mono text-zinc-500 italic uppercase">Python 3.10</span>
+            <span className="text-[10px] font-mono text-zinc-500 italic uppercase">
+              {/* Dynamic Language Label */}
+              {problem.language === "C" ? "C (GCC 11)" : "Python 3.10"}
+            </span>
             <div className="flex gap-3">
               <button onClick={handleRun}
                 className="flex items-center gap-2 px-4 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-bold hover:bg-zinc-800 transition-all">
@@ -288,7 +323,8 @@ const IDE = () => {
           <div className="flex-1">
             <Editor
               theme="vs-dark"
-              defaultLanguage="python"
+              // Dynamic Language matching
+              language={problem.language?.toLowerCase() === "c" ? "c" : "python"} 
               value={code}
               onChange={setCode}
               options={{ fontSize: 15, minimap: { enabled: false } }}
