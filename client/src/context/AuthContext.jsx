@@ -5,7 +5,8 @@ import {
   signOut, 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword,
-  updateProfile 
+  updateProfile,
+  sendPasswordResetEmail
 } from "firebase/auth";
 import { auth, googleProvider } from "../firebase";
 
@@ -18,18 +19,20 @@ export const AuthProvider = ({ children }) => {
   // 1. Google Login
   const googleLogin = () => signInWithPopup(auth, googleProvider);
 
-  // 2. Email Register (New)
+  // 2. Email Register
   const registerWithEmail = async (email, password, name) => {
     const res = await createUserWithEmailAndPassword(auth, email, password);
-    // User create hone ke baad uska naam set karo
     await updateProfile(res.user, { displayName: name });
     return res;
   };
 
-  // 3. Email Login (New)
+  // 3. Email Login
   const loginWithEmail = (email, password) => {
     return signInWithEmailAndPassword(auth, email, password);
   };
+
+  // 4. Reset Password
+  const resetPassword = (email) => sendPasswordResetEmail(auth, email);
 
   const logout = () => signOut(auth);
 
@@ -42,7 +45,7 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, googleLogin, registerWithEmail, loginWithEmail, logout, loading }}>
+    <AuthContext.Provider value={{ user, googleLogin, registerWithEmail, loginWithEmail, resetPassword, logout, loading }}>
       {!loading && children}
     </AuthContext.Provider>
   );
