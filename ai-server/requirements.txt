@@ -1,6 +1,0 @@
-fastapi
-uvicorn
-thefuzz
-python-levenshtein
-pandas
-numpy
