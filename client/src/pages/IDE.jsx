@@ -4,7 +4,8 @@ import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import io from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
-import { Camera, Mic, Lightbulb, X, Terminal, Play, Send, CheckCircle, Loader, Bot } from 'lucide-react';
+import { Camera, Mic, Lightbulb, X, Terminal, Play, Send, CheckCircle, Loader, Bot, ShieldCheck } from 'lucide-react'; 
+import PlagReport from './PlagReport'; 
 
 const JUDGE0_URL = "https://ce.judge0.com";
 const LANGUAGE_ID = { Python: 71, C: 50, python: 71, c: 50 };
@@ -26,10 +27,15 @@ const IDE = () => {
   const [showLensQR,  setShowLensQR]  = useState(false);
   const [submitState, setSubmitState] = useState('idle');
 
-  // 🚨 NAYE STATES: Dedicated AI Screen ke liye
+  // AI Screen States
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiResponse,  setAiResponse]  = useState("");
   const [aiLoading,   setAiLoading]   = useState(false);
+
+  // Plagiarism States
+  const [showPlagModal, setShowPlagModal] = useState(false);
+  const [plagReport,    setPlagReport]    = useState(null);
+  const [plagLoading,   setPlagLoading]   = useState(false);
 
   const startTimeRef  = useRef(Date.now());
   const hintsUsedRef  = useRef(0);         
@@ -71,7 +77,6 @@ const IDE = () => {
 
     socket.on("lens_hint", (data) => {
       lensUsedRef.current = true;
-      // Console ki jagah ab modal me data dikhega
       setAiResponse(data.hint);
       setShowAIModal(true);
       window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.hint));
@@ -86,10 +91,17 @@ const IDE = () => {
     return () => socket.disconnect();
   }, [problemId, user]);
 
+  // 🚨 UPDATED saveProgress function! 🚨
   const saveProgress = async (status) => {
-    if (!user || !problem) return; 
+    if (!user || !problem) {
+      console.log("Cannot save: User or problem data is missing.");
+      return; 
+    }
+    
     const solveTimeSeconds = Math.round((Date.now() - startTimeRef.current) / 1000);
+    
     try {
+      // 1. Save standard user progress
       await axios.post(`${NODE_URL}/api/progress`, {
         userId: user.uid, displayName: user.displayName || user.email,
         problemId, problemTitle: problem.title, topic: problem.topic,
@@ -98,9 +110,57 @@ const IDE = () => {
         hintsUsed: hintsUsedRef.current, 
         lensUsed: lensUsedRef.current, 
         voiceUsed: voiceUsedRef.current,
-        hintAnalytics: hintStatsRef.current
+        hintAnalytics: hintStatsRef.current,
+        code: code, 
+        language: problem.language
       });
-    } catch (err) {}
+
+      // 2. EXPLICITLY save to the CodeSubmission collection for Plagiarism
+      const subRes = await axios.post(`${NODE_URL}/api/submissions`, {
+        userId: user.uid,
+        problemId: problemId,
+        code: code,
+        language: problem.language || "python",
+        status: status
+      });
+      console.log("✅ Submission saved successfully:", subRes.data);
+
+    } catch (err) {
+      console.error("❌ Failed to save data:", err.response?.data || err.message);
+    }
+  };
+
+  const handlePlagiarismCheck = async () => {
+    if (!code.trim() || !user || !problem) return;
+
+    setPlagLoading(true);
+    setPlagReport(null);
+
+    try {
+      const res = await axios.post(`${AI_URL}/api/plagiarism`, {
+        code:          code,
+        problem_id:    problemId,
+        problem_title: problem.title,
+        user_id:       user.uid,
+      });
+
+      setPlagReport(res.data);
+      setShowPlagModal(true);
+
+    } catch (err) {
+      console.error("Plagiarism check failed:", err);
+      setPlagReport({
+        status: "error",
+        verdict: "error",
+        overall_score: 0,
+        message: "Could not reach the plagiarism service.",
+        total_submissions_checked: 0,
+        matches_found: 0,
+      });
+      setShowPlagModal(true);
+    } finally {
+      setPlagLoading(false);
+    }
   };
 
   const handleRun = async () => {
@@ -211,7 +271,6 @@ const IDE = () => {
     recognition.start();
   };
 
-  // 🚨 AI HINT ab UI Pop-up update karega instead of console
   const getAIHint = async (level, voiceQuery = "") => {
     if(!problem) return;
     
@@ -233,8 +292,6 @@ const IDE = () => {
       if (voiceQuery) {
         try {
           const aiData = JSON.parse(rawHint);
-          
-          // Formatted display in Modal
           setAiResponse(`💡 Quick Note:\n${aiData.display}\n\n🗣️ Explanation:\n${aiData.spoken}`);
           window.speechSynthesis.speak(new SpeechSynthesisUtterance(aiData.spoken));
 
@@ -304,7 +361,6 @@ const IDE = () => {
             <Lightbulb size={18}/><span className="text-[9px] mt-1 font-bold">TEXT HINT ({hintLevel})</span>
           </button>
 
-          {/* 🚨 NAYA BUTTON: Read AI Response */}
           <button onClick={() => setShowAIModal(true)} className="flex flex-col items-center text-zinc-500 hover:text-green-400 transition-colors ml-4 border-l border-zinc-800 pl-8">
             <Bot size={18}/><span className="text-[9px] mt-1 font-bold">AI REPLY</span>
           </button>
@@ -347,6 +403,16 @@ const IDE = () => {
           <div className="h-12 border-b border-zinc-900 flex items-center justify-between px-4">
             <span className="text-[10px] font-mono text-zinc-500 italic uppercase">{problem.language === "C" ? "C (GCC 11)" : "Python 3.10"}</span>
             <div className="flex gap-3">
+              
+              <button 
+                onClick={handlePlagiarismCheck} 
+                disabled={plagLoading} 
+                className={`flex items-center gap-2 px-4 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-bold hover:bg-zinc-800 transition-all ${plagLoading ? 'text-zinc-500 cursor-wait' : 'text-zinc-400'}`}
+              >
+                {plagLoading ? <Loader size={12} className="animate-spin"/> : <ShieldCheck size={12}/>} 
+                {plagLoading ? 'CHECKING...' : 'CHECK PLAGIARISM'}
+              </button>
+
               <button onClick={handleRun} className="flex items-center gap-2 px-4 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-bold hover:bg-zinc-800 transition-all"><Play size={12} fill="currentColor"/> RUN</button>
               <button onClick={handleSubmit} disabled={submitState === 'submitting'} className={`flex items-center gap-2 px-4 py-1 rounded text-xs font-black transition-all ${submitBtnStyle[submitState]}`}>{submitBtnLabel[submitState]}</button>
             </div>
@@ -363,7 +429,6 @@ const IDE = () => {
         </div>
       </div>
 
-      {/* 🚨 NAYA UI: Dedicated AI Modal Pop-up */}
       {showAIModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-6">
           <div className="bg-zinc-950 w-full max-w-3xl max-h-[80vh] rounded-3xl border border-zinc-800 shadow-[0_0_40px_rgba(0,190,255,0.1)] flex flex-col overflow-hidden">
@@ -401,6 +466,14 @@ const IDE = () => {
           </div>
         </div>
       )}
+
+      {showPlagModal && (
+        <PlagReport
+          report={plagReport}
+          onClose={() => setShowPlagModal(false)}
+        />
+      )}
+
     </div>
   );
 };

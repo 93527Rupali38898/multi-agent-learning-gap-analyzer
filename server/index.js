@@ -7,6 +7,7 @@
 const express  = require('express');
 const mongoose = require('mongoose');
 const cors     = require('cors');
+const CodeSubmission = require("./models/CodeSubmission");
 require('dotenv').config();
 
 const Problem      = require('./models/Problem');
@@ -424,5 +425,54 @@ app.patch('/api/progress/hint', async (req, res) => {
 });
 
 
+// ── Route 1: Save a code submission (call this when student submits) ──
+ 
+app.post("/api/submissions", async (req, res) => {
+  try {
+    const { userId, problemId, code, language, status } = req.body;
+ 
+    if (!userId || !problemId || !code) {
+      return res.status(400).json({ error: "userId, problemId, and code are required" });
+    }
+ 
+    const submission = new CodeSubmission({
+      userId,
+      problemId,
+      code: code.trim(),
+      language: language || "python",
+      status: status || "attempted"
+    });
+ 
+    await submission.save();
+    res.status(201).json({ message: "Submission saved", id: submission._id });
+ 
+  } catch (err) {
+    console.error("Save submission error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+ 
+// ── Route 2: Fetch all submissions for a problem (for plagiarism check) ──
+ 
+app.get("/api/submissions/:problemId", async (req, res) => {
+  try {
+    const { problemId } = req.params;
+ 
+    // Fetch all submissions for this problem, excluding huge fields
+    const submissions = await CodeSubmission.find(
+      { problemId },
+      { userId: 1, code: 1, submittedAt: 1, status: 1, _id: 1 }
+    ).sort({ submittedAt: -1 }).limit(200); // cap at 200 for performance
+ 
+    res.json(submissions);
+  } catch (err) {
+    console.error("Fetch submissions error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+
+
