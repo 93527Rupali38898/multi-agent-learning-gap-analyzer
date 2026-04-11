@@ -1,17 +1,17 @@
 // server/index.js
 // ─────────────────────────────────────────────────────────────
 // Sutra AI — Node.js Backend
-// Added: /api/progress (save solve), /api/dashboard/:userId
+// Added: /api/progress, /api/dashboard/:userId, Submissions, Achievements
 // ─────────────────────────────────────────────────────────────
 
 const express  = require('express');
 const mongoose = require('mongoose');
 const cors     = require('cors');
-const CodeSubmission = require("./models/CodeSubmission");
 require('dotenv').config();
 
-const Problem      = require('./models/Problem');
-const UserProgress = require('./models/UserProgress'); // ← NEW
+const Problem        = require('./models/Problem');
+const UserProgress   = require('./models/UserProgress');
+const CodeSubmission = require('./models/CodeSubmission');
 
 const app = express();
 app.use(cors());
@@ -24,7 +24,7 @@ mongoose.connect(process.env.MONGO_URI)
 
 
 // ════════════════════════════════════════════════════════════
-// EXISTING ROUTES (unchanged)
+// EXISTING ROUTES 
 // ════════════════════════════════════════════════════════════
 
 // Get all problems
@@ -49,27 +49,17 @@ app.get('/api/problems/course/:name', async (req, res) => {
 
 
 // ════════════════════════════════════════════════════════════
-// NEW ROUTE 1 — Save / Update Progress when user solves
-// POST /api/progress
-//
-// Called from IDE.jsx on handleSubmit (when all test cases pass)
-// and on each hint request (to track hintsUsed count)
-//
-// Body: {
-//   userId, displayName, problemId, problemTitle,
-//   topic, category, difficulty, status,
-//   solveTimeSeconds, hintsUsed, lensUsed, voiceUsed
-// }
+// ROUTE 1 — Save / Update Progress when user solves
 // ════════════════════════════════════════════════════════════
 app.post('/api/progress', async (req, res) => {
   try {
     const {
       userId, displayName, problemId, problemTitle,
       topic, category, difficulty, status,
-      solveTimeSeconds, hintsUsed, lensUsed, voiceUsed
+      solveTimeSeconds, hintsUsed, lensUsed, voiceUsed,
+      code, language 
     } = req.body;
 
-    // Build the update object
     const update = {
       displayName,
       problemTitle,
@@ -81,7 +71,6 @@ app.post('/api/progress', async (req, res) => {
       voiceUsed,
     };
 
-    // Only set solveTimeSeconds and solvedAt when actually solved
     if (status === 'solved') {
       update.status       = 'solved';
       update.solvedAt     = new Date();
@@ -90,13 +79,21 @@ app.post('/api/progress', async (req, res) => {
       update.status = 'attempted';
     }
 
-    // upsert: true  → create document if it doesn't exist
-    // new: true     → return the updated document
     const progress = await UserProgress.findOneAndUpdate(
-      { userId, problemId },  // find by this unique pair
-      { $set: update },       // update these fields
+      { userId, problemId },  
+      { $set: update },       
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
+
+    if (code) {
+      await CodeSubmission.create({ 
+        userId, 
+        problemId, 
+        code, 
+        language: language || "python", 
+        status 
+      });
+    }
 
     res.json({ success: true, progress });
   } catch (err) {
@@ -107,46 +104,36 @@ app.post('/api/progress', async (req, res) => {
 
 
 // ════════════════════════════════════════════════════════════
-// NEW ROUTE 2 — Full Dashboard Data for one user
-// GET /api/dashboard/:userId
-//
-// Called from Dashboard.jsx on mount.
-// Returns everything the dashboard needs in ONE request.
+// ROUTE 2 — Full Dashboard Data for one user
 // ════════════════════════════════════════════════════════════
 app.get('/api/dashboard/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
 
-    // ── Fetch ALL progress records for this user ──────────────
     const allProgress = await UserProgress.find({ userId }).lean();
-    // .lean() returns plain JS objects instead of Mongoose docs → faster
 
     const solved    = allProgress.filter(p => p.status === 'solved');
     const attempted = allProgress.filter(p => p.status === 'attempted');
-
 
     // ── 1. STATS ─────────────────────────────────────────────
     const totalSolved  = solved.length;
     const hintsUsed    = allProgress.reduce((sum, p) => sum + (p.hintsUsed || 0), 0);
     const solvedTimes  = solved.filter(p => p.solveTimeSeconds > 0).map(p => p.solveTimeSeconds);
     const avgSolveTime = solvedTimes.length
-      ? Math.round(solvedTimes.reduce((a, b) => a + b, 0) / solvedTimes.length / 60) // → minutes
+      ? Math.round(solvedTimes.reduce((a, b) => a + b, 0) / solvedTimes.length / 60) 
       : 0;
 
-    // Total problems in DB for completion rate
     const totalProblems = await Problem.countDocuments();
     const completionRate = totalProblems > 0
       ? Math.round((totalSolved / totalProblems) * 100)
       : 0;
 
-
     // ── 2. STREAK ─────────────────────────────────────────────
-    // Get all unique dates where user solved something
     const solveDates = [...new Set(
       solved
         .filter(p => p.solvedAt)
-        .map(p => p.solvedAt.toISOString().split('T')[0]) // "YYYY-MM-DD"
-    )].sort().reverse(); // newest first
+        .map(p => p.solvedAt.toISOString().split('T')[0]) 
+    )].sort().reverse(); 
 
     let currentStreak = 0;
     let longestStreak = 0;
@@ -155,7 +142,6 @@ app.get('/api/dashboard/:userId', async (req, res) => {
     const today     = new Date().toISOString().split('T')[0];
     const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
 
-    // Current streak: count consecutive days back from today/yesterday
     if (solveDates.includes(today) || solveDates.includes(yesterday)) {
       for (let i = 0; i < solveDates.length; i++) {
         const expected = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
@@ -167,13 +153,12 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       }
     }
 
-    // Longest streak: iterate all solve dates ascending
     const asc = [...solveDates].reverse();
     for (let i = 0; i < asc.length; i++) {
       if (i === 0) { tempStreak = 1; continue; }
       const prev = new Date(asc[i - 1]);
       const curr = new Date(asc[i]);
-      const diff = (curr - prev) / 86400000; // days apart
+      const diff = (curr - prev) / 86400000; 
       if (diff === 1) {
         tempStreak++;
         longestStreak = Math.max(longestStreak, tempStreak);
@@ -183,13 +168,11 @@ app.get('/api/dashboard/:userId', async (req, res) => {
     }
     longestStreak = Math.max(longestStreak, currentStreak, tempStreak);
 
-
     // ── 3. DIFFICULTY SPLIT ───────────────────────────────────
     const difficultyColors = { Easy: '#00C49F', Medium: '#FFBB28', Hard: '#FF5C5C' };
     const diffMap = { Easy: 0, Medium: 0, Hard: 0 };
     solved.forEach(p => { if (p.difficulty) diffMap[p.difficulty]++; });
 
-    // Get totals per difficulty from Problem collection
     const [easyTotal, medTotal, hardTotal] = await Promise.all([
       Problem.countDocuments({ difficulty: 'Easy' }),
       Problem.countDocuments({ difficulty: 'Medium' }),
@@ -202,9 +185,7 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       { name: 'Hard',   solved: diffMap.Hard,   total: hardTotal || 1, color: difficultyColors.Hard },
     ];
 
-
     // ── 4. CATEGORY PROGRESS ──────────────────────────────────
-    // Group solved by category
     const catSolvedMap = {};
     solved.forEach(p => {
       if (!p.category) return;
@@ -212,7 +193,6 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       catSolvedMap[p.category].solved++;
     });
 
-    // Get total problems per category from DB
     const catTotals = await Problem.aggregate([
       { $group: { _id: { category: '$category', topic: '$topic' }, count: { $sum: 1 } } }
     ]);
@@ -222,12 +202,9 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       course: c._id.topic,
       total:  c.count,
       solved: catSolvedMap[c._id.category]?.solved || 0,
-    })).filter(c => c.name); // remove null categories
-
+    })).filter(c => c.name); 
 
     // ── 5. SKILL RADAR ────────────────────────────────────────
-    // Score formula: (solved_in_topic / total_in_topic) * 100
-    // Topics map to skills — expand this as needed
     const skillMap = {
       Logic:    ['Arrays', 'Linked Lists', 'Heaps'],
       Syntax:   ['Strings', 'Basics'],
@@ -244,9 +221,7 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       return { subject: skill, score, fullMark: 100 };
     });
 
-
     // ── 6. WEEKLY ACTIVITY ────────────────────────────────────
-    // Last 8 weeks, count solves and hints per week
     const weeklyActivity = [];
     for (let w = 7; w >= 0; w--) {
       const weekStart = new Date();
@@ -266,9 +241,7 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       weeklyActivity.push({ week: label, solved: weekSolved.length, hints: weekHints });
     }
 
-
     // ── 7. HEATMAP ────────────────────────────────────────────
-    // Map of "YYYY-MM-DD" → count of problems solved that day
     const heatmapData = {};
     solved.forEach(p => {
       if (!p.solvedAt) return;
@@ -276,25 +249,20 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       heatmapData[key] = (heatmapData[key] || 0) + 1;
     });
 
-
     // ── 8. RECENT ACTIVITY ────────────────────────────────────
-    // Last 10 activity records, newest first
     const recentActivity = await UserProgress
       .find({ userId })
       .sort({ updatedAt: -1 })
       .limit(10)
       .lean();
 
-
     // ── 9. LEADERBOARD ────────────────────────────────────────
-    // Aggregate total solved count per user, sort desc
     const leaderboardRaw = await UserProgress.aggregate([
       { $match: { status: 'solved' } },
       { $group: {
           _id:         '$userId',
           displayName: { $first: '$displayName' },
           totalSolved: { $sum: 1 },
-          // points formula: Easy=10, Medium=20, Hard=40
           points: { $sum: {
             $switch: {
               branches: [
@@ -310,7 +278,6 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       { $limit: 20 },
     ]);
 
-    // Calculate current user points
     const userPoints = solved.reduce((sum, p) => {
       if (p.difficulty === 'Easy')   return sum + 10;
       if (p.difficulty === 'Medium') return sum + 20;
@@ -318,21 +285,19 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       return sum;
     }, 0);
 
-    // Find user rank
     const userRank = leaderboardRaw.findIndex(l => l._id === userId) + 1;
 
     const leaderboard = leaderboardRaw.slice(0, 3).map((l, i) => ({
       rank:   i + 1,
       name:   l.displayName || 'Anonymous',
       points: l.points,
-      streak: 0, // Could add streak per user in future
+      streak: 0, 
       avatar: (l.displayName || 'A')[0].toUpperCase(),
       isUser: l._id === userId,
     }));
 
-    // Always include the current user's position
     if (userRank > 3) {
-      leaderboard.push({ rank: '...', name: '', points: 0, streak: 0, avatar: '' }); // spacer
+      leaderboard.push({ rank: '...', name: '', points: 0, streak: 0, avatar: '' }); 
       const userData = leaderboardRaw[userRank - 1];
       if (userData) {
         leaderboard.push({
@@ -343,7 +308,7 @@ app.get('/api/dashboard/:userId', async (req, res) => {
           avatar: '★',
           isUser: true,
         });
-        const nextUser = leaderboardRaw[userRank]; // person just below
+        const nextUser = leaderboardRaw[userRank]; 
         if (nextUser) {
           leaderboard.push({
             rank:   userRank + 1,
@@ -356,6 +321,15 @@ app.get('/api/dashboard/:userId', async (req, res) => {
       }
     }
 
+    // ── 10. ACHIEVEMENTS DATA ─────────────────────────────────
+    const pureSolves = solved.filter(p => p.hintsUsed === 0).length;
+    const dsaSolved  = solved.filter(p => p.topic === 'DSA').length;
+    const totalUsers = await UserProgress.distinct('userId').then(ids => ids.length) || 1;
+    const speedBadges = {
+      easy:   solved.some(p => p.difficulty === 'Easy'   && p.solveTimeSeconds > 0 && p.solveTimeSeconds <= 180),
+      medium: solved.some(p => p.difficulty === 'Medium' && p.solveTimeSeconds > 0 && p.solveTimeSeconds <= 480),
+      hard:   solved.some(p => p.difficulty === 'Hard'   && p.solveTimeSeconds > 0 && p.solveTimeSeconds <= 900),
+    };
 
     // ── FINAL RESPONSE ────────────────────────────────────────
     res.json({
@@ -368,6 +342,11 @@ app.get('/api/dashboard/:userId', async (req, res) => {
         hintsUsed,
         avgSolveTime,
         completionRate,
+        // 👇 NEW FIELDS ADDED HERE 👇
+        pureSolves,
+        dsaSolved,
+        totalUsers,
+        speedBadges,
       },
       difficulty,
       skillRadar,
@@ -395,11 +374,7 @@ app.get('/api/dashboard/:userId', async (req, res) => {
 
 
 // ════════════════════════════════════════════════════════════
-// NEW ROUTE 3 — Update hints count only (called on each hint)
-// PATCH /api/progress/hint
-//
-// Called from IDE.jsx every time getAIHint() runs.
-// Lightweight — just increments the hintsUsed counter.
+// ROUTE 3 — Update hints count only (called on each hint)
 // ════════════════════════════════════════════════════════════
 app.patch('/api/progress/hint', async (req, res) => {
   try {
@@ -408,12 +383,12 @@ app.patch('/api/progress/hint', async (req, res) => {
     await UserProgress.findOneAndUpdate(
       { userId, problemId },
       {
-        $inc: { hintsUsed: 1 },                 // increment by 1
+        $inc: { hintsUsed: 1 },                 
         $set: {
           ...(lensUsed  && { lensUsed: true }),
           ...(voiceUsed && { voiceUsed: true }),
         },
-        $setOnInsert: { firstAttemptAt: new Date() } // only set if new doc
+        $setOnInsert: { firstAttemptAt: new Date() } 
       },
       { upsert: true, new: true }
     );
@@ -425,16 +400,19 @@ app.patch('/api/progress/hint', async (req, res) => {
 });
 
 
-// ── Route 1: Save a code submission (call this when student submits) ──
- 
+// ════════════════════════════════════════════════════════════
+// NEW ROUTES — Code Submissions API
+// ════════════════════════════════════════════════════════════
+
+// ── Route 1: Save a separate code submission ──
 app.post("/api/submissions", async (req, res) => {
   try {
     const { userId, problemId, code, language, status } = req.body;
- 
+
     if (!userId || !problemId || !code) {
       return res.status(400).json({ error: "userId, problemId, and code are required" });
     }
- 
+
     const submission = new CodeSubmission({
       userId,
       problemId,
@@ -442,28 +420,27 @@ app.post("/api/submissions", async (req, res) => {
       language: language || "python",
       status: status || "attempted"
     });
- 
+
     await submission.save();
     res.status(201).json({ message: "Submission saved", id: submission._id });
- 
+
   } catch (err) {
     console.error("Save submission error:", err);
     res.status(500).json({ error: err.message });
   }
 });
- 
+
 // ── Route 2: Fetch all submissions for a problem (for plagiarism check) ──
- 
 app.get("/api/submissions/:problemId", async (req, res) => {
   try {
     const { problemId } = req.params;
- 
+
     // Fetch all submissions for this problem, excluding huge fields
     const submissions = await CodeSubmission.find(
       { problemId },
       { userId: 1, code: 1, submittedAt: 1, status: 1, _id: 1 }
     ).sort({ submittedAt: -1 }).limit(200); // cap at 200 for performance
- 
+
     res.json(submissions);
   } catch (err) {
     console.error("Fetch submissions error:", err);
@@ -471,8 +448,6 @@ app.get("/api/submissions/:problemId", async (req, res) => {
   }
 });
 
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
-
-
