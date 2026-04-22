@@ -11,6 +11,7 @@ To make the **Sutra Lens** (Mobile Camera) and **Voice** features work flawlessl
 ### 🟢 Terminal 1 — Cloudflare (Python AI Backend)
 ```bash
 npx cloudflared tunnel --url http://localhost:8000
+npx cloudflared tunnel --url http://127.0.0.1:8000
 ```
 📌 **Action:** Copy the generated link → looks like `https://your-random-words.trycloudflare.com`
 
