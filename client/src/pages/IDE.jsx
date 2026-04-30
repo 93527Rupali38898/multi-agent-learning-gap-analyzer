@@ -44,7 +44,10 @@ const IDE = () => {
   const [showExplanation, setShowExplanation] = useState(false);
   const [hasSolved, setHasSolved] = useState(false);
 
+  // --- NEW: Paste & Time Tracking ---
+  const [pastedChars, setPastedChars] = useState(0);
   const startTimeRef = useRef(Date.now());
+  
   const hintsUsedRef = useRef(0);
   const lensUsedRef  = useRef(false);
   const voiceUsedRef = useRef(false);
@@ -100,6 +103,18 @@ const IDE = () => {
     return () => socket.disconnect();
   }, [problemId, user]);
 
+  // --- NEW: Track Pasted Characters ---
+  const handleEditorChange = (value, event) => {
+    setCode(value);
+    if (event.changes && event.changes.length > 0) {
+      const textAdded = event.changes[0].text;
+      // If someone pastes more than 30 characters at once, track it
+      if (textAdded.length > 30) {
+        setPastedChars(prev => prev + textAdded.length);
+      }
+    }
+  };
+
   const saveProgress = async (status, passedCases = 0, totalCases = 1, isPlagiarized = false) => {
     if (!user || !problem) return;
     const solveTimeSeconds = Math.round((Date.now() - startTimeRef.current) / 1000);
@@ -130,9 +145,16 @@ const IDE = () => {
     if (!code.trim() || !user || !problem) return;
     setPlagLoading(true);
     setPlagReport(null);
+    const timeTakenSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
+
     try {
       const res = await axios.post(`${AI_URL}/api/plagiarism`, {
-        code, problem_id: problemId, problem_title: problem.title, user_id: user.uid,
+        code, 
+        problem_id: problemId, 
+        problem_title: problem.title, 
+        user_id: user.uid,
+        time_taken: timeTakenSeconds,  // Sending time
+        pasted_chars: pastedChars      // Sending paste count
       });
       setPlagReport(res.data);
       setShowPlagModal(true);
@@ -200,11 +222,19 @@ const IDE = () => {
 
       // 🔴 SILENT PLAGIARISM CHECK 🔴
       let isCopied = false;
+      const timeTakenSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
       try {
-        const plagRes = await axios.post(`${AI_URL}/api/plagiarism`, { code, problem_id: problemId, problem_title: problem.title, user_id: user.uid });
-        if (plagRes.data && plagRes.data.overall_score >= 80) { 
+        const plagRes = await axios.post(`${AI_URL}/api/plagiarism`, { 
+          code, problem_id: problemId, problem_title: problem.title, user_id: user.uid,
+          time_taken: timeTakenSeconds, pasted_chars: pastedChars
+        });
+        
+        // Check if either AST caught it OR Gemini flagged it as Pasted/AI
+        const geminiAnalysis = plagRes.data?.gemini_analysis || {};
+        if (plagRes.data && (plagRes.data.overall_score >= 80 || geminiAnalysis.penaltyMultiplier < 1.0)) { 
           isCopied = true;
-          setOutput(prev => prev + `\n\n🚨 PLAGIARISM DETECTED (${plagRes.data.overall_score}% match). -50 Points penalty applied!`);
+          const reason = geminiAnalysis.verdict || `AST Match: ${plagRes.data.overall_score}%`;
+          setOutput(prev => prev + `\n\n🚨 PLAGIARISM DETECTED [${reason}]. Penalty applied to rating!`);
         }
       } catch (err) {
          console.error("Silent plag check failed", err);
@@ -283,6 +313,7 @@ const IDE = () => {
     setCode(problem?.starterCode || "");
     setShowResetConfirm(false);
     setOutput("");
+    setPastedChars(0); // Reset pasted count
   };
 
   const submitBtnStyle = {
@@ -374,7 +405,7 @@ const IDE = () => {
             </div>
           </div>
           <div className="flex-1">
-            <Editor theme="vs-dark" language={problem.language?.toLowerCase() === "c" ? "c" : "python"} value={code} onChange={setCode} options={{ fontSize: 15, minimap: { enabled: false } }}/>
+            <Editor theme="vs-dark" language={problem.language?.toLowerCase() === "c" ? "c" : "python"} value={code} onChange={handleEditorChange} options={{ fontSize: 15, minimap: { enabled: false } }}/>
           </div>
           <div className="h-40 bg-black border-t border-zinc-900 p-4 font-mono overflow-y-auto">
             <div className="text-[9px] text-zinc-600 flex items-center gap-2 mb-2 tracking-widest uppercase"><Terminal size={12}/> Output Console</div>
