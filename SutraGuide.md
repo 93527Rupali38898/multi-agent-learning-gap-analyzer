@@ -18,6 +18,10 @@ npx cloudflared tunnel --url http://127.0.0.1:8000
 ### 🟢 Terminal 2 — Ngrok (React Frontend)
 ```bash
 ngrok http 5173
+npx localtunnel --port 5173
+ssh -R 80:localhost:5173 serveo.net
+
+https://console.serveo.net/settings?n=1&src=ssh_nudge&v=B
 ```
 📌 **Action:** Copy the **Forwarding** link → looks like `https://random-id.ngrok-free.app`
 
