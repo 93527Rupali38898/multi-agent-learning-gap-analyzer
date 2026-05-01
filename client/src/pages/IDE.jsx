@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   Camera, Mic, Lightbulb, X, Terminal, Play, Send,
   CheckCircle, Loader, Bot, ShieldCheck, RotateCcw,
-  Clock, BookOpen, ChevronDown, ChevronUp,
+  Clock, BookOpen, ChevronDown, ChevronUp, TrendingUp
 } from 'lucide-react';
 import PlagReport from './PlagReport';
 
@@ -43,8 +43,11 @@ const IDE = () => {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [showExplanation, setShowExplanation] = useState(false);
   const [hasSolved, setHasSolved] = useState(false);
+  
+  // NEW: Live Rating State for IDE Header
+  const [currentRating, setCurrentRating] = useState("...");
 
-  // --- NEW: Paste & Time Tracking ---
+  // Paste & Time Tracking for Anti-Cheat
   const [pastedChars, setPastedChars] = useState(0);
   const startTimeRef = useRef(Date.now());
   
@@ -54,6 +57,21 @@ const IDE = () => {
   const hintStatsRef = useRef({ level1: 0, level2: 0, level3: 0, level4: 0, custom_topics: [] });
 
   const lensURL = `${lensBaseURL}/lens/${problemId}`;
+
+  // Fetch Live Rating on Mount
+  useEffect(() => {
+    if (user) {
+      axios.get(`${NODE_URL}/api/dashboard/${user.uid}`)
+        .then(res => {
+          if (res.data?.rating?.rating !== undefined) {
+            setCurrentRating(res.data.rating.rating);
+          } else {
+            setCurrentRating(0);
+          }
+        })
+        .catch(() => setCurrentRating("—"));
+    }
+  }, [user]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -92,7 +110,7 @@ const IDE = () => {
     const socket = io(AI_URL, { path: "/ws/socket.io" });
     socket.emit("join_problem", { problemId });
     socket.on("lens_hint", (data) => {
-      lensUsedRef.current = true;
+      lensUsedRef.current = true; // Sets Lens bonus flag
       setAiResponse(data.hint);
       setShowAIModal(true);
       window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.hint));
@@ -103,12 +121,10 @@ const IDE = () => {
     return () => socket.disconnect();
   }, [problemId, user]);
 
-  // --- NEW: Track Pasted Characters ---
   const handleEditorChange = (value, event) => {
     setCode(value);
     if (event.changes && event.changes.length > 0) {
       const textAdded = event.changes[0].text;
-      // If someone pastes more than 30 characters at once, track it
       if (textAdded.length > 30) {
         setPastedChars(prev => prev + textAdded.length);
       }
@@ -125,8 +141,8 @@ const IDE = () => {
         category: problem.category, difficulty: problem.difficulty, status,
         solveTimeSeconds: status === 'solved' ? solveTimeSeconds : 0,
         hintsUsed: hintsUsedRef.current,
-        lensUsed:  lensUsedRef.current,
-        voiceUsed: voiceUsedRef.current,
+        lensUsed:  lensUsedRef.current, // Crucial for +5 bonus
+        voiceUsed: voiceUsedRef.current, // Crucial for penalty
         hintAnalytics: hintStatsRef.current,
         code, language: problem.language,
         testCasesPassed: passedCases,
@@ -149,12 +165,8 @@ const IDE = () => {
 
     try {
       const res = await axios.post(`${AI_URL}/api/plagiarism`, {
-        code, 
-        problem_id: problemId, 
-        problem_title: problem.title, 
-        user_id: user.uid,
-        time_taken: timeTakenSeconds,  // Sending time
-        pasted_chars: pastedChars      // Sending paste count
+        code, problem_id: problemId, problem_title: problem.title, user_id: user.uid,
+        time_taken: timeTakenSeconds, pasted_chars: pastedChars
       });
       setPlagReport(res.data);
       setShowPlagModal(true);
@@ -220,7 +232,7 @@ const IDE = () => {
       const summary = `\n> Results: ${passed}/${testCases.length} test cases passed\n` + results.join('\n');
       setOutput(prev => prev + summary);
 
-      // 🔴 SILENT PLAGIARISM CHECK 🔴
+      // 🔴 REAL-TIME PLAGIARISM & ANOMALY CHECK 🔴
       let isCopied = false;
       const timeTakenSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
       try {
@@ -229,12 +241,18 @@ const IDE = () => {
           time_taken: timeTakenSeconds, pasted_chars: pastedChars
         });
         
-        // Check if either AST caught it OR Gemini flagged it as Pasted/AI
         const geminiAnalysis = plagRes.data?.gemini_analysis || {};
         if (plagRes.data && (plagRes.data.overall_score >= 80 || geminiAnalysis.penaltyMultiplier < 1.0)) { 
           isCopied = true;
           const reason = geminiAnalysis.verdict || `AST Match: ${plagRes.data.overall_score}%`;
-          setOutput(prev => prev + `\n\n🚨 PLAGIARISM DETECTED [${reason}]. Penalty applied to rating!`);
+          
+          setOutput(prev => prev + `\n\n🚨 ANTI-CHEAT TRIGGERED: [${reason}]`);
+          setOutput(prev => prev + `\n> Penalty: -50 Points (Compounding) applied to your Sutra Rating.`);
+          
+          // Instantly deduct rating in the UI
+          setCurrentRating(prev => (typeof prev === 'number' ? prev - 50 : prev));
+
+          if(user) await axios.patch(`${NODE_URL}/api/progress/penalty`, { userId: user.uid, k_value: 50 });
         }
       } catch (err) {
          console.error("Silent plag check failed", err);
@@ -260,17 +278,17 @@ const IDE = () => {
 
   const startThoughtCapture = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) { alert("Oops! Your browser doesn't support Web Speech API. Use Chrome/Edge on Desktop."); return; }
-    voiceUsedRef.current = true;
+    if (!SpeechRecognition) { alert("Oops! Your browser doesn't support Web Speech API."); return; }
+    voiceUsedRef.current = true; // Sets voice penalty flag
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.onstart = () => { setIsListening(true); setShowAIModal(true); setAiLoading(true); setAiResponse("🎤 Listening to you..."); };
+    recognition.onstart = () => { setIsListening(true); setShowAIModal(true); setAiLoading(true); setAiResponse("🎤 Listening..."); };
     recognition.onresult = (e) => {
       const transcript = e.results[0][0].transcript;
       setAiResponse(`🎤 You asked: "${transcript}"\n\n⏳ Sutra AI is thinking...`);
       getAIHint(hintLevel, transcript);
     };
-    recognition.onerror = () => { setAiResponse("❌ Microphone Error. Please check permissions."); setAiLoading(false); setIsListening(false); };
+    recognition.onerror = () => { setAiResponse("❌ Microphone Error."); setAiLoading(false); setIsListening(false); };
     recognition.onend = () => setIsListening(false);
     recognition.start();
   };
@@ -289,13 +307,7 @@ const IDE = () => {
           const aiData = JSON.parse(rawHint);
           setAiResponse(`💡 Quick Note:\n${aiData.display}\n\n🗣️ Explanation:\n${aiData.spoken}`);
           window.speechSynthesis.speak(new SpeechSynthesisUtterance(aiData.spoken));
-          if (aiData.category === "custom") { if (aiData.custom_topic) hintStatsRef.current.custom_topics.push(aiData.custom_topic); } 
-          else {
-            const askedLevel = parseInt(aiData.category.split("_")[1]);
-            hintStatsRef.current[`level${askedLevel}`] += 1;
-            if (askedLevel >= hintLevel && hintLevel < 4) setHintLevel(askedLevel + 1);
-          }
-        } catch { setAiResponse(rawHint); window.speechSynthesis.speak(new SpeechSynthesisUtterance(rawHint)); }
+        } catch { setAiResponse(rawHint); }
       } else {
         hintStatsRef.current[`level${level}`] += 1;
         setAiResponse(rawHint);
@@ -313,132 +325,82 @@ const IDE = () => {
     setCode(problem?.starterCode || "");
     setShowResetConfirm(false);
     setOutput("");
-    setPastedChars(0); // Reset pasted count
+    setPastedChars(0); 
   };
 
   const submitBtnStyle = {
-    idle: 'bg-cyan-600 text-black hover:bg-cyan-400 shadow-[0_0_15px_rgba(8,145,178,0.3)]',
+    idle: 'bg-cyan-600 text-black hover:bg-cyan-400',
     submitting: 'bg-zinc-700 text-zinc-400 cursor-wait',
-    passed: 'bg-green-600 text-white shadow-[0_0_15px_rgba(34,197,94,0.4)]',
+    passed: 'bg-green-600 text-white',
     failed: 'bg-red-700 text-white',
   };
-  const submitBtnLabel = {
-    idle: <><Send size={12} fill="currentColor"/> SUBMIT</>,
-    submitting: <>Checking...</>,
-    passed: <><CheckCircle size={12}/> PASSED</>,
-    failed: <>FAILED — Retry</>,
-  };
 
-  if (loading) return <div className="h-screen bg-black text-cyan-500 flex flex-col items-center justify-center"><Loader className="animate-spin mb-4" size={32}/><p className="font-mono tracking-widest text-sm uppercase">Loading...</p></div>;
-  if (!problem) return <div className="h-screen bg-black text-red-500 flex flex-col items-center justify-center"><X size={48} className="mb-4"/><p className="font-mono tracking-widest text-lg uppercase">Problem Not Found</p></div>;
+  if (loading) return <div className="h-screen bg-black text-cyan-500 flex flex-col items-center justify-center"><Loader className="animate-spin mb-4" size={32}/></div>;
+  if (!problem) return <div className="h-screen bg-black text-red-500 flex flex-col items-center justify-center"><X size={48}/></div>;
 
   return (
     <div className="h-screen bg-black text-white flex flex-col overflow-hidden relative">
       <div className="h-14 border-b border-zinc-900 flex items-center justify-between px-6 bg-zinc-950">
         <div className="flex gap-8">
           <button onClick={() => setShowLensQR(true)} className="flex flex-col items-center text-zinc-500 hover:text-cyan-400 transition-colors">
-            <Camera size={18}/><span className="text-[9px] mt-1 font-bold">LENS</span>
+            <Camera size={18}/><span className="text-[9px] mt-1 font-bold">LENS (+BONUS)</span>
           </button>
           <button onClick={startThoughtCapture} className={`flex flex-col items-center transition-colors ${isListening ? 'text-red-500' : 'text-zinc-500 hover:text-purple-400'}`}>
             <Mic size={18} className={isListening ? 'animate-pulse' : ''}/>
-            <span className="text-[9px] mt-1 font-bold">{isListening ? 'LISTENING...' : 'TALK TO AI'}</span>
+            <span className="text-[9px] mt-1 font-bold">{isListening ? 'LISTENING...' : 'VOICE (PENALTY)'}</span>
           </button>
           <button onClick={() => getAIHint(hintLevel, "")} className="flex flex-col items-center text-zinc-500 hover:text-yellow-400 transition-colors">
             <Lightbulb size={18}/><span className="text-[9px] mt-1 font-bold">TEXT HINT ({hintLevel})</span>
           </button>
-          <button onClick={() => setShowAIModal(true)} className="flex flex-col items-center text-zinc-500 hover:text-green-400 transition-colors ml-4 border-l border-zinc-800 pl-8">
-            <Bot size={18}/><span className="text-[9px] mt-1 font-bold">AI REPLY</span>
-          </button>
         </div>
 
         <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5 px-3 py-1 rounded bg-zinc-900 border border-zinc-800 text-[10px] font-black text-zinc-400 uppercase tracking-widest">
+            <TrendingUp size={11} className="text-cyan-500"/> RATING: <span className="text-cyan-400 ml-1">{currentRating}</span>
+          </div>
           <div className="flex items-center gap-1.5 text-[10px] font-black font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-3 py-1 rounded-full">
             <Clock size={11} className="text-cyan-500"/><span>{formatTime(elapsedSeconds)}</span>
           </div>
-          {user && <div className="flex items-center gap-1.5 text-[9px] text-zinc-600 font-bold"><div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"/>TRACKING PROGRESS</div>}
-          <div className="text-zinc-700 font-mono text-[10px] tracking-[4px]">SUTRA_IDE_V2.0</div>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
         <div className="w-[35%] p-6 border-r border-zinc-900 overflow-y-auto bg-zinc-950/50">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-cyan-500 text-[10px] font-bold tracking-widest uppercase italic">{problem.topic}</span>
-            <span className={`text-[9px] font-black px-2 py-0.5 rounded border uppercase ${problem.difficulty === 'Hard' ? 'border-red-500/30 text-red-400' : problem.difficulty === 'Medium' ? 'border-yellow-500/30 text-yellow-400' : 'border-green-500/30 text-green-400'}`}>
-              {problem.difficulty}
-            </span>
-          </div>
           <h2 className="text-3xl font-black mb-4 italic uppercase tracking-tighter">{problem.title}</h2>
           <p className="text-zinc-400 text-sm leading-relaxed mb-8 whitespace-pre-line">{problem.description}</p>
-          {problem.constraints && (
-            <div className="space-y-4 mb-8">
-              <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Constraints:</h4>
-              <ul className="space-y-2">
-                {Array.isArray(problem.constraints) ? problem.constraints.map((c, i) => <li key={i} className="text-[11px] font-mono text-zinc-400 bg-zinc-900/40 p-2 rounded border border-zinc-800/50 italic">{c}</li>) : <li className="text-[11px] font-mono text-zinc-400 bg-zinc-900/40 p-2 rounded border border-zinc-800/50 italic">{problem.constraints}</li>}
-              </ul>
-            </div>
-          )}
-          {problem.explanation && hasSolved && (
-            <div className="mb-8 rounded-2xl border border-green-500/25 overflow-hidden">
-              <button onClick={() => setShowExplanation(prev => !prev)} className="w-full flex items-center justify-between px-4 py-3 bg-green-500/10 hover:bg-green-500/15 transition-colors">
-                <div className="flex items-center gap-2"><BookOpen size={13} className="text-green-400"/><span className="text-[10px] font-black text-green-400 uppercase tracking-widest">Optimal Approach</span></div>
-                {showExplanation ? <ChevronUp size={14} className="text-green-500"/> : <ChevronDown size={14} className="text-green-500"/>}
-              </button>
-              {showExplanation && <div className="px-4 py-4 bg-green-500/5 border-t border-green-500/15"><p className="text-zinc-300 text-[12px] leading-relaxed">{problem.explanation}</p></div>}
-            </div>
-          )}
         </div>
 
         <div className="flex-1 flex flex-col bg-zinc-950">
           <div className="h-12 border-b border-zinc-900 flex items-center justify-between px-4">
-            <span className="text-[10px] font-mono text-zinc-500 italic uppercase">{problem.language === "C" ? "C (GCC 11)" : "Python 3.10"}</span>
+            <span className="text-[10px] font-mono text-zinc-500 italic uppercase">Python 3.10</span>
             <div className="flex gap-3 items-center">
-              <button onClick={() => setShowResetConfirm(true)} className="flex items-center gap-1.5 px-3 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-bold text-zinc-500 hover:text-orange-400 hover:border-orange-500/30 transition-all"><RotateCcw size={11}/> RESET</button>
-              <button onClick={handlePlagiarismCheck} disabled={plagLoading} className={`flex items-center gap-2 px-4 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-bold hover:bg-zinc-800 transition-all ${plagLoading ? 'text-zinc-500 cursor-wait' : 'text-zinc-400'}`}>
-                {plagLoading ? <Loader size={12} className="animate-spin"/> : <ShieldCheck size={12}/>}
+              <button onClick={handlePlagiarismCheck} disabled={plagLoading} className={`flex items-center gap-2 px-4 py-1 rounded bg-zinc-900 text-xs font-bold hover:bg-zinc-800 transition-all ${plagLoading ? 'text-zinc-500' : 'text-zinc-400'}`}>
                 {plagLoading ? 'CHECKING...' : 'CHECK PLAGIARISM'}
               </button>
-              <button onClick={handleRun} className="flex items-center gap-2 px-4 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-bold hover:bg-zinc-800 transition-all"><Play size={12} fill="currentColor"/> RUN</button>
+              <button onClick={handleRun} className="flex items-center gap-2 px-4 py-1 rounded bg-zinc-900 text-xs font-bold hover:bg-zinc-800 transition-all"><Play size={12} fill="currentColor"/> RUN</button>
               <button onClick={handleSubmit} disabled={submitState === 'submitting'} className={`flex items-center gap-2 px-4 py-1 rounded text-xs font-black transition-all ${submitBtnStyle[submitState]}`}>
-                {submitBtnLabel[submitState]}
+                <Send size={12} fill="currentColor"/> SUBMIT
               </button>
             </div>
           </div>
           <div className="flex-1">
-            <Editor theme="vs-dark" language={problem.language?.toLowerCase() === "c" ? "c" : "python"} value={code} onChange={handleEditorChange} options={{ fontSize: 15, minimap: { enabled: false } }}/>
+            <Editor theme="vs-dark" language="python" value={code} onChange={handleEditorChange} options={{ fontSize: 15, minimap: { enabled: false } }}/>
           </div>
           <div className="h-40 bg-black border-t border-zinc-900 p-4 font-mono overflow-y-auto">
-            <div className="text-[9px] text-zinc-600 flex items-center gap-2 mb-2 tracking-widest uppercase"><Terminal size={12}/> Output Console</div>
-            <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{output || "> System initialized. Waiting for input..."}</div>
+            <div className="text-[9px] text-zinc-600 tracking-widest uppercase mb-2">Output Console</div>
+            <div className="text-sm text-zinc-300 whitespace-pre-wrap">{output || "> Waiting for input..."}</div>
           </div>
         </div>
       </div>
 
-      {showResetConfirm && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-8 max-w-sm w-full mx-4 shadow-2xl">
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => setShowResetConfirm(false)} className="flex-1 px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-bold text-zinc-400 hover:text-white transition-colors">Cancel</button>
-              <button onClick={handleResetCode} className="flex-1 px-4 py-2 rounded-xl bg-orange-500 text-black text-xs font-black hover:bg-orange-400 transition-colors">Yes, Reset</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showAIModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-6">
-          <div className="bg-zinc-950 w-full max-w-3xl max-h-[80vh] rounded-3xl border border-zinc-800 shadow-[0_0_40px_rgba(0,190,255,0.1)] flex flex-col overflow-hidden">
-            <div className="h-14 border-b border-zinc-900 flex items-center justify-between px-6 bg-zinc-900/50">
-              <div className="flex items-center gap-3 text-cyan-400"><Bot size={20}/><h3 className="font-black italic uppercase tracking-widest text-sm">Sutra AI Tutor</h3></div>
-              <button onClick={() => setShowAIModal(false)} className="text-zinc-500 hover:text-white transition-colors"><X size={20}/></button>
-            </div>
-            <div className="p-8 overflow-y-auto text-zinc-300 text-[15px] leading-relaxed whitespace-pre-wrap font-mono">
-              {aiLoading ? <div className="flex flex-col items-center justify-center py-10 text-yellow-400 animate-pulse"><Loader size={32} className="animate-spin mb-4"/></div> : <div className="bg-zinc-900/40 p-6 rounded-2xl border border-zinc-800/50">{aiResponse || "Ask a question using Voice, or request a Text Hint!"}</div>}
-            </div>
+          <div className="bg-zinc-950 w-full max-w-3xl rounded-3xl border border-zinc-800 p-8 text-zinc-300 font-mono">
+             {aiLoading ? <Loader className="animate-spin" /> : aiResponse}
+             <button onClick={() => setShowAIModal(false)} className="mt-4 text-red-500 font-bold uppercase tracking-widest text-xs">Close</button>
           </div>
         </div>
       )}
-      
       {showPlagModal && <PlagReport report={plagReport} onClose={() => setShowPlagModal(false)}/>}
     </div>
   );

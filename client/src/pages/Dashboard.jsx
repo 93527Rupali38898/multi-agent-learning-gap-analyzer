@@ -7,7 +7,7 @@ import {
 import {
   ChevronLeft, ChevronRight, Flame, Trophy, Target,
   Zap, TrendingUp, Clock, CheckCircle, BookOpen,
-  Award, Star
+  Award, Star, ShieldCheck
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -252,7 +252,7 @@ const Dashboard = () => {
     load();
   }, [user]);
 
-  const tabs = ['overview', 'skills', 'activity'];
+  const tabs = ['overview', 'skills', 'activity', 'rating'];
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -276,11 +276,12 @@ const Dashboard = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8 space-y-6">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           <StatCard icon={<Target size={18} />}  label="Total Solved"   value={data.stats.totalSolved} sub={`${data.stats.completionRate}% completion`} accentColor="#00E5FF" />
           <StatCard icon={<Flame size={18} />}   label="Current Streak" value={`${data.stats.currentStreak}d`} sub={`Best: ${data.stats.longestStreak} days`} accentColor="#F97316" />
           <StatCard icon={<Trophy size={18} />}  label="Global Rank"    value={`#${data.stats.globalRank}`} sub="Based on total points" accentColor="#FBBF24" />
-          <StatCard icon={<Star size={18} />}    label="Total Points"   value={(data.stats.totalPoints || 0).toLocaleString()} sub="Easy 15 · Med 30 · Hard 45 · Lens +3" accentColor="#A855F7" />
+          <StatCard icon={<Star size={18} />}    label="Total Points"   value={(data.stats.totalPoints || 0).toLocaleString()} sub="Easy ×10 · Med ×25 · Hard ×50" accentColor="#A855F7" />
+          <StatCard icon={<TrendingUp size={18} />} label="Your Rating" value={data.rating?.rating ?? '—'} sub={data.rating?.rank ?? 'Solve problems to get rated'} accentColor="#EF9F27" />
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -387,6 +388,49 @@ const Dashboard = () => {
                 </SectionCard>
                 <RecentActivity data={data.recentActivity} />
                 <Leaderboard data={data.leaderboard} />
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'rating' && (
+            <motion.div key="rating" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-5">
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
+                <h3 className="text-[11px] font-black text-zinc-400 uppercase tracking-[0.2em] flex items-center gap-2 mb-5">
+                  <span className="text-cyan-500"><TrendingUp size={14} /></span> How your rating is calculated
+                </h3>
+                <div className="space-y-3">
+                  {[
+                    { label: 'Proficiency',  weight: '35%', desc: 'Hard (50) > Med (25) > Easy (10) guaranteed. Includes +5 Lens Bonus & Voice Hint Penalties.',  score: data.rating?.subScores?.proficiency  ?? 0 },
+                    { label: 'Efficiency',   weight: '25%', desc: 'Speed vs baseline time. Drops if excess hints are used.',  score: data.rating?.subScores?.efficiency   ?? 0 },
+                    { label: 'Consistency',  weight: '20%', desc: 'Current streak (caps at 14d) + Longest streak (caps at 30d).', score: data.rating?.subScores?.consistency  ?? 0 },
+                    { label: 'Breadth',      weight: '12%', desc: 'Diversity of unique categories (60%) and courses (40%).', score: data.rating?.subScores?.breadth      ?? 0 },
+                    { label: 'Independence', weight: '8%',  desc: 'Ratio of 0-hint solves. Grants bonus if independence > 80%.', score: data.rating?.subScores?.independence ?? 0 },
+                  ].map(row => (
+                    <div key={row.label} className="flex items-center gap-4 py-2 border-b border-zinc-800/60 last:border-0">
+                      <div className="w-28 shrink-0">
+                        <p className="text-xs font-bold text-zinc-200">{row.label}</p>
+                        <p className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">{row.weight} weight</p>
+                      </div>
+                      <p className="text-[11px] text-zinc-500 flex-1">{row.desc}</p>
+                      <div className="shrink-0 flex items-center gap-2">
+                        <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                          <motion.div className="h-full rounded-full bg-cyan-500" initial={{ width: 0 }} animate={{ width: `${row.score}%` }} transition={{ duration: 1, delay: 0.1 }} />
+                        </div>
+                        <span className="text-xs font-black text-zinc-300 w-8 text-right">{row.score}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                
+                {/* Anti-Cheat Banner */}
+                <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                   <p className="text-[11px] text-red-400 font-bold uppercase tracking-widest flex items-center justify-center gap-2">
+                     <ShieldCheck size={14} /> Anti-Cheat Enforcement Active
+                   </p>
+                   <p className="text-[11px] text-zinc-400 text-center mt-2">
+                     Compounding penalty (k=50) applied for Plagiarism/Pasting anomalies. Grace curve active for rank &lt; 200.
+                   </p>
+                </div>
               </div>
             </motion.div>
           )}
